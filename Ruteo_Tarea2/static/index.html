@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resiliencia Red Chile - Sismo 8.8 (27F)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
+    #map { width: 100vw; height: 100vh; }
+    .panel {
+      position: absolute; top: 14px; right: 14px; z-index: 1000;
+      width: 330px; background: #fff; padding: 16px; border-radius: 10px;
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
+      display: flex; flex-direction: column; gap: 10px; font-size: 13px;
+    }
+    .panel h2 { font-size: 16px; color: #0f172a; }
+    .metric-box {
+      background: #f8fafc; border: 1px solid #cbd5e1;
+      border-radius: 6px; padding: 10px; line-height: 1.65;
+    }
+    .badge-drop { color: #b91c1c; font-weight: 700; }
+    .legend { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+    .legend-item { display: flex; align-items: center; gap: 8px; }
+    .line-swatch { width: 22px; height: 4px; border-radius: 2px; display: inline-block; }
+    .dashed-swatch { width: 22px; height: 0; border-top: 3px dashed #334155; display: inline-block; }
+    .dot-swatch { width: 11px; height: 11px; border-radius: 50%; display: inline-block; border: 1.5px solid #fff; box-shadow: 0 0 2px #000; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h2>Resiliencia Internet Chile — 27F (Mw 8.8)</h2>
+
+    <div class="metric-box">
+      <div><strong>Enlaces / Extensión:</strong> <span id="topo-info">Cargando...</span></div>
+      <div><strong>ATTR Operación (Antes):</strong> <span id="attr-antes">—</span></div>
+      <div><strong>ATTR Post-Sismo (Después):</strong> <span id="attr-despues">—</span></div>
+      <div><strong>Impacto:</strong> <span id="attr-diff" class="badge-drop">—</span></div>
+    </div>
+
+    <div class="legend">
+      <strong>Probabilidad de falla por enlace</strong>
+      <div class="legend-item"><span class="line-swatch" style="background:#dc2626"></span> Crítica (&ge; 60%)</div>
+      <div class="legend-item"><span class="line-swatch" style="background:#f59e0b"></span> Moderada (25% – 59%)</div>
+      <div class="legend-item"><span class="line-swatch" style="background:#16a34a"></span> Baja (&lt; 25%)</div>
+      <div class="legend-item"><span class="dashed-swatch"></span> Enlace sintético (trazo punteado)</div>
+      <div class="legend-item"><span class="dot-swatch" style="background:#1d4ed8"></span> Nodo clave conectado a topología</div>
+      <div class="legend-item"><span class="dot-swatch" style="background:#64748b"></span> Nodo clave sin cobertura SAIP</div>
+      <div class="legend-item"><span class="dot-swatch" style="background:#b91c1c"></span> Epicentro Sismo Mw 8.8 (USGS)</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map("map").setView([-35.8, -71.8], 5);
+
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors",
+    }).addTo(map);
+
+    function colorPorProb(p) {
+      if (p >= 0.6) return "#dc2626";
+      if (p >= 0.25) return "#f59e0b";
+      return "#16a34a";
+    }
+
+    async function cargarTodo() {
+      const [resMapa, resMetrics] = await Promise.all([
+        fetch("/api/mapa"),
+        fetch("/api/resultados"),
+      ]);
+      const mapa = await resMapa.json();
+      const metrics = await resMetrics.json();
+
+      // 1. Panel de métricas
+      const t = metrics.topologia;
+      document.getElementById("topo-info").textContent =
+        `${t.total_enlaces} (${t.total_km} km | ${t.enlaces_sinteticos} sintéticos)`;
+      document.getElementById("attr-antes").textContent =
+        metrics.antes.attr_operacion.toFixed(4);
+      document.getElementById("attr-despues").textContent =
+        `${metrics.despues.attr_post_media.toFixed(4)} ± ${metrics.despues.attr_post_std.toFixed(4)} (N=${metrics.despues.simulaciones})`;
+      document.getElementById("attr-diff").textContent =
+        `-${metrics.comparacion.diferencia_absoluta.toFixed(4)} (-${metrics.comparacion.caida_porcentual}%)`;
+
+      // 2. Capa de enlaces (distinguiendo sintéticos con dashArray)
+      const capaEnlaces = L.geoJSON(mapa.enlaces, {
+        style: (f) => ({
+          color: colorPorProb(f.properties.prob_falla),
+          weight: f.properties.es_sintetico ? 3.5 : 3,
+          opacity: 0.9,
+          dashArray: f.properties.es_sintetico ? "6, 6" : null,
+        }),
+        onEachFeature: (f, layer) => {
+          const p = f.properties;
+          layer.bindPopup(
+            `<strong>Enlace #${p.id}</strong> (${p.nombre})<br>` +
+            `Tipo: ${p.es_sintetico ? "Sintético / Complementario" : "Fibra óptica (SAIP)"}<br>` +
+            `Longitud: ${Number(p.largo_km).toFixed(2)} km<br>` +
+            `Dist. epicentro: ${Number(p.dist_km).toFixed(1)} km<br>` +
+            `PGV estimado: ${Number(p.pgv_cm_s).toFixed(2)} cm/s<br>` +
+            `<strong>Prob. falla: ${(p.prob_falla * 100).toFixed(2)}%</strong>`
+          );
+        },
+      }).addTo(map);
+
+      // 3. Capa de nodos clave
+      const capaNodos = L.geoJSON(mapa.nodos_clave, {
+        pointToLayer: (f, latlng) => {
+          const conectado = f.properties.vertice_id !== null;
+          return L.circleMarker(latlng, {
+            radius: 6,
+            fillColor: conectado ? "#1d4ed8" : "#64748b",
+            color: "#ffffff",
+            weight: 2,
+            fillOpacity: 1,
+          });
+        },
+        onEachFeature: (f, layer) => {
+          const p = f.properties;
+          layer.bindPopup(
+            `<strong>${p.nombre}</strong><br>` +
+            `Categoría: ${p.categoria}<br>` +
+            `Rol: ${p.rol}<br>` +
+            `Vértice pgRouting: ${p.vertice_id ?? "Sin cobertura SAIP"}` +
+            (p.dist_snap_km !== null ? ` (snap: ${p.dist_snap_km} km)` : "")
+          );
+        },
+      }).addTo(map);
+
+      // 4. Capa de epicentro y radios de impacto (100, 250 y 400 km)
+      const capaSismo = L.layerGroup().addTo(map);
+      if (mapa.terremoto && mapa.terremoto.geometry) {
+        const [lon, lat] = mapa.terremoto.geometry.coordinates;
+        const p = mapa.terremoto.properties;
+
+        [100000, 250000, 400000].forEach((r, idx) => {
+          L.circle([lat, lon], {
+            radius: r,
+            color: "#dc2626",
+            weight: 1.2,
+            fillColor: "#ef4444",
+            fillOpacity: 0.14 - idx * 0.04,
+            dashArray: "4 4",
+          }).addTo(capaSismo);
+        });
+
+        L.circleMarker([lat, lon], {
+          radius: 8,
+          fillColor: "#b91c1c",
+          color: "#ffffff",
+          weight: 2,
+          fillOpacity: 1,
+        })
+          .bindPopup(
+            `<strong>${p.title}</strong><br>` +
+            `ID USGS: ${p.event_id}<br>` +
+            `Magnitud: ${p.mag} mww<br>` +
+            `Profundidad: ${p.depth_km} km`
+          )
+          .addTo(capaSismo);
+      }
+
+      L.control.layers(null, {
+        "Enlaces de fibra (daño)": capaEnlaces,
+        "Nodos clave": capaNodos,
+        "Epicentro y radios 27F": capaSismo,
+      }, { position: "bottomleft" }).addTo(map);
+    }
+
+    cargarTodo();
+  </script>
+</body>
+</html>
